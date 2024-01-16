@@ -1,0 +1,54 @@
+---
+title: "R code for combining FIMO IDd similar sequences from protein of interest"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+<!-- This script is used to combine [INPUT FILE] FIMO outputs for all common binding motifs for a single protein of interest and creates a [OUTPUT FILE] FASTA file and peptie list file for visualizing sequence coverage with MStools.  -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the base directory -->
+
+```{r setup,  message=FALSE, warning=FALSE, echo=FALSE}
+library(stringr)
+library(dplyr)
+
+# all functions for MAE processing can be found in:
+source("./MAE functions.R")
+
+#variables that need to be assigned for this script:
+base_dir <- "/path/to/folder"
+protein <- "protein_name" #example: "SARS-COV-2"
+```
+
+<!-- Protein of Interest -->
+```{r,  message=FALSE, warning=FALSE, echo=FALSE}
+#replace spaced with "_" to match file naming
+protein <- gsub("\\s+", "_", protein)
+file_name <- "fimo.tsv"
+
+#create list of files for that protein 
+data_list <- read_FIMO_files(base_dir, file_name)
+non_empty_data_list <- Filter(function(df) nrow(df) > 0, data_list)
+combined_data <- do.call(rbind, Map(cbind, non_empty_data_list, source = names(non_empty_data_list)))
+
+print(protein, quote = FALSE)
+```
+
+<!-- Output files can be found in: -->
+```{r,  message=FALSE, warning=FALSE, echo=FALSE}
+#write all peptides CSV for chosen protein
+write.csv(combined_data, paste0(base_dir, "/sequences shared with common motifs_", protein, ".csv"))
+#write all peptides FASTA file for chosen protein 
+create_fasta_file_new(combined_data, "matched_sequence", paste0(base_dir, "/sequences shared with common motifs_", 
+                                                                       protein, ".fasta"))
+
+#write an MStools file
+MStoolstibble <- combined_data %>%
+  select(sequence_name, start, stop)
+write.table(MStoolstibble, paste0(base_dir, "/sequences shared with common motifs_", protein, "_MStools_peptidelist.txt"), quote = F, sep = "\t", row.names = F)
+
+print(base_dir, quote = FALSE)
+```
+<!-- Files can the be uploaded to MStools for visualizaiton of sequence coverage and "regions of interest" that have multiple 9-mers with high sequence similarity with multiple common binding motifs.   -->
