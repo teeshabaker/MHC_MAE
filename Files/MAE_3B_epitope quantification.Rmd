@@ -1,0 +1,265 @@
+---
+title: "R code for quantification for salmonella epitopes"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This script is for creating [OUTPUT FILE] a quantification table for all salmonella epitopes identified across the multiple exposure conditions.  -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- Note that the variables used in this file are created by running the other code files first -->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r table of salmonella average of averages, message=FALSE, warning=FALSE, echo=FALSE}
+
+max_count=c()
+i=1
+for(i in 1:length(paired_conditions)){
+  selected_9to11_epitopes <- epitopes_from9to11_union_tibbles[names(epitopes_from9to11_union_tibbles) %in% paired_conditions]
+  selected_12andup_epitopes <- epitopes_from12andup_union_tibbles[names(epitopes_from12andup_union_tibbles) %in% paired_conditions]
+  epi_9to11_mem = selected_9to11_epitopes[[i]]
+  epi_9to11_mem = dplyr::filter(epi_9to11_mem, grepl("_SALTS",Accession))
+  max_9to11c = max(epi_9to11_mem$Count)
+  epi_12andup_mem = selected_12andup_epitopes[[i]]
+  epi_12andup_mem = dplyr::filter(epi_12andup_mem, grepl("_SALTS",Accession))
+  max_12andupc = max(epi_12andup_mem$Count)
+  max_count = c(max_count,max_9to11c,max_12andupc)
+}
+
+#Create new lists to calculate the average MaxLFQ intensity for every SALTS peptide 
+salmonella_epitopes_9to11_average_tibbles <- list()
+salmonella_epitopes_12andup_average_tibbles <- list()
+
+i=1
+for (i in 1:length(paired_conditions)) {
+  selected_epitopes <- epitopes_from9to11_union_tibbles[names(epitopes_from9to11_union_tibbles) %in% paired_conditions]
+  selected_peptides <- peptides_9to11_tibbles[names(peptides_9to11_tibbles) %in% paired_conditions]
+  epi_mem <- selected_epitopes[[i]]
+  epi_mem <- dplyr::filter(epi_mem, grepl("_SALTS", Accession))
+  pep_mem <- selected_peptides[[i]]
+  max_pep <- max(max_count)
+  
+  # Create variable names using the max number of peptides
+  pep_names <- paste0("Pep", seq(1:max_pep))
+  pep_names2 <- paste0("Pepavg", seq(1:max_pep))
+  pepnna_names <- paste0("Pep_", seq(1:max_pep), "nna")
+  epi_mem <- epi_mem %>% separate(Pep, c(pep_names))
+
+  for (nm in c(pep_names2)) {
+    epi_mem[[nm]] <- NA
+  }
+  
+  all_av <- c()
+  
+  for (jl in seq_along(pep_names)) {
+    pepind <- pep_names[jl]
+    pepavgind <- pep_names2[jl]
+    epi_mem_pep <- epi_mem[[pepind]]
+    countc <- 1
+    
+    for (k in epi_mem_pep) {
+      pep_mem_sub <- subset(pep_mem, pep_mem$Peptide.Sequence == k)
+      # Set 0 to NA before we take the average
+      pep_mem_sub[pep_mem_sub == 0] <- NA
+      # Only take the average of columns with MaxLFQ in the name
+      avg_cols <- grep("MaxLFQ", colnames(pep_mem_sub))
+      pep_mem_sub$pep_mean <- rowMeans(pep_mem_sub[, avg_cols], na.rm = TRUE)
+      all_av <- append(all_av, pep_mem_sub$pep_mean)
+      
+      if (length(pep_mem_sub$pep_mean) > 0) {
+        epi_mem[countc, pepavgind] <- pep_mem_sub$pep_mean
+      }
+      countc <- countc + 1
+    }
+  }
+  # Get the global average
+  avg_cols <- grep("avg", colnames(epi_mem))
+  epi_mem$glob_mean <- rowMeans(epi_mem[, avg_cols], na.rm = TRUE)
+  salmonella_epitopes_9to11_average_tibbles[[i]] <- epi_mem
+}
+
+i=1
+for (i in 1:length(paired_conditions)) {
+  selected_epitopes <- epitopes_from12andup_union_tibbles[names(epitopes_from12andup_union_tibbles) %in% paired_conditions]
+  selected_peptides <- peptides_12andup_tibbles[names(peptides_12andup_tibbles) %in% paired_conditions]
+  epi_mem <- selected_epitopes[[i]]
+  epi_mem <- dplyr::filter(epi_mem, grepl("_SALTS", Accession))
+  pep_mem <- selected_peptides[[i]]
+  max_pep <- max(max_count)
+  
+  # Create variable names using the max number of peptides
+  pep_names <- paste0("Pep", seq(1:max_pep))
+  pep_names2 <- paste0("Pepavg", seq(1:max_pep))
+  pepnna_names <- paste0("Pep_", seq(1:max_pep), "nna")
+  epi_mem <- epi_mem %>% separate(Pep, c(pep_names))
+
+  for (nm in c(pep_names2)) {
+    epi_mem[[nm]] <- NA
+  }
+  
+  all_av <- c()
+  
+  for (jl in seq_along(pep_names)) {
+    pepind <- pep_names[jl]
+    pepavgind <- pep_names2[jl]
+    epi_mem_pep <- epi_mem[[pepind]]
+    countc <- 1
+    
+    for (k in epi_mem_pep) {
+      pep_mem_sub <- subset(pep_mem, pep_mem$Peptide.Sequence == k)
+      # Set 0 to NA before we take the average
+      pep_mem_sub[pep_mem_sub == 0] <- NA
+      # Only take the average of columns with MaxLFQ in the name
+      avg_cols <- grep("MaxLFQ", colnames(pep_mem_sub))
+      pep_mem_sub$pep_mean <- rowMeans(pep_mem_sub[, avg_cols], na.rm = TRUE)
+      all_av <- append(all_av, pep_mem_sub$pep_mean)
+      
+      if (length(pep_mem_sub$pep_mean) > 0) {
+        epi_mem[countc, pepavgind] <- pep_mem_sub$pep_mean
+      }
+      countc <- countc + 1
+    }
+  }
+  # Get the global average
+  avg_cols <- grep("avg", colnames(epi_mem))
+  epi_mem$glob_mean <- rowMeans(epi_mem[, avg_cols], na.rm = TRUE)
+  salmonella_epitopes_12andup_average_tibbles[[i]] <- epi_mem
+}
+
+names(salmonella_epitopes_9to11_average_tibbles) <- paired_conditions
+names(salmonella_epitopes_12andup_average_tibbles) <- paired_conditions
+
+
+#Add in a new column to tag MHCI and MHC II binders 
+i=1
+for (i in seq_along(salmonella_epitopes_9to11_average_tibbles)) {
+  salmonella_tibble <- salmonella_epitopes_9to11_average_tibbles[[i]]
+  selected_9to11_epitopes <- epitopes_9to11_withbinders_tibbles_1000genome[names(epitopes_9to11_withbinders_tibbles_1000genome) %in% paired_conditions]
+  epitope_matches_9to11 <- selected_9to11_epitopes[[i]]
+  salmonella_tibble$binding <- "no"  # Default to "no"
+  
+  for (j in seq_along(salmonella_tibble$Epitope)) {
+    epitope <- salmonella_tibble$Epitope[j]
+    # Check if there's a non-NA Allele in either list
+    if (any(!is.na(epitope_matches_9to11$Allele[epitope_matches_9to11$Epitope == epitope]))) {
+      salmonella_tibble$binding[j] <- "MHCI"
+    }
+  }
+  # Update the tibble in the list
+  salmonella_epitopes_9to11_average_tibbles[[i]] <- salmonella_tibble
+}
+
+i=1
+for (i in seq_along(salmonella_epitopes_12andup_average_tibbles)) {
+  salmonella_tibble <- salmonella_epitopes_12andup_average_tibbles[[i]]
+  selected_12andup_epitopes <- epitopes_12andup_withbinders_tibbles_1000genome[names(epitopes_12andup_withbinders_tibbles_1000genome) %in% paired_conditions]
+  epitope_matches_12andup <- selected_12andup_epitopes[[i]]
+  salmonella_tibble$binding <- "no"  # Default to "no"
+  
+  for (j in seq_along(salmonella_tibble$Epitope)) {
+    epitope <- salmonella_tibble$Epitope[j]
+    # Check if there's a non-NA Allele in either list
+    if (any(!is.na(epitope_matches_12andup$Allele[epitope_matches_12andup$Epitope == epitope]))) {
+      salmonella_tibble$binding[j] <- "MHCII"
+    }
+  }
+  # Update the tibble in the list
+  salmonella_epitopes_12andup_average_tibbles[[i]] <- salmonella_tibble
+}
+
+#Combine the two averages tibbles together for a single list of tibbles of all eptiopes 
+salmonella_epitopes_average_tibbles <- list()
+i=1
+for (i in 1:length(paired_conditions)) {
+  salmonella_epitopes_average_tibbles[[i]] <- bind_rows(salmonella_epitopes_9to11_average_tibbles[[i]], salmonella_epitopes_12andup_average_tibbles[[i]])
+}
+names(salmonella_epitopes_average_tibbles) <- paired_conditions
+
+#unique list of all SALTS peptides found in all paired_conditions 
+combined_salmonella_peptides <- bind_rows(salmonella_epitopes_average_tibbles)
+unique_combined_salmonella_peptides <- combined_salmonella_peptides %>%
+  dplyr::select(c(1:6,13), Epitope) %>%
+  distinct()
+
+#Create a new summary matrix of all unique SALTS peptides across all paired_conditions 
+salmonella_maxLFQintensity_df <- data.frame(matrix(NA, nrow = length(paired_conditions), ncol = nrow(unique_combined_salmonella_peptides)))
+colnames(salmonella_maxLFQintensity_df) <- unique_combined_salmonella_peptides$Epitope
+rownames(salmonella_maxLFQintensity_df) <- paired_conditions
+
+#Fil lthe summary matrix 
+i=1
+j=1
+for (i in 1:length(salmonella_epitopes_average_tibbles)) {
+  tibble <- salmonella_epitopes_average_tibbles[[i]]
+  for (j in 1:nrow(unique_combined_salmonella_peptides)) {
+    epi <- unlist(unique_combined_salmonella_peptides[j, "Epitope"])
+    
+    row_index <- which(tibble$Epitope == epi)
+    
+    if (length(row_index) > 0) {
+      salmonella_maxLFQintensity_df[i, j] <- tibble$glob_mean[row_index]
+    } else {
+      salmonella_maxLFQintensity_df[i, j] <- NA
+    }
+  }
+}
+
+#transpose 
+salmonella_maxLFQintensity_tdf <- data.frame(t(salmonella_maxLFQintensity_df))
+#add in binding data 
+salmonella_maxLFQintensity_tdf <- cbind(unique_combined_salmonella_peptides, salmonella_maxLFQintensity_tdf)
+
+```
+
+```{r write_out,  message=FALSE, warning=FALSE, echo=FALSE}
+write.csv(salmonella_maxLFQintensity_tdf, "salmonella_quant_table.csv")
+
+
+create_salmonella_fasta_files <- function(data) {
+  unique_descriptions <- unique(data$Description)
+  
+  for (desc in unique_descriptions) {
+    epitopes_df <- data[data$Description == desc, ]
+    epitopes <- epitopes_df$Epitope
+    
+    if (length(epitopes) > 0) {
+      filename <- paste0("salmonella_epitopes_by_description_", gsub("\\s+", "_", desc), ".fasta")
+      create_fasta_file(epitopes_df, filename)
+      cat("Fasta file created for", desc, "at", filename, "\n")
+    }
+  }
+}
+
+# Call the function to create FASTA files
+create_salmonella_fasta_files(salmonella_maxLFQintensity_tdf)
+```
+
+
+```{r accession_interest,  message=FALSE, warning=FALSE, echo=FALSE}
+accessionofinterest <- "A0A0H3NJI9"
+tmp <- salmonella_maxLFQintensity_tdf %>%
+  filter(grepl(accessionofinterest, Accession))
+create_fasta_file(tmp, paste0("salmonella_peptide_", accessionofinterest ,".fasta"))
+
+accessionofinterest <- "A0A0H3NBQ0"
+tmp <- salmonella_maxLFQintensity_tdf %>%
+  filter(grepl(accessionofinterest, Accession))
+create_fasta_file(tmp, paste0("salmonella_peptide_", accessionofinterest ,".fasta"))
+
+accessionofinterest <- "A0A0H3NVY3"
+tmp <- salmonella_maxLFQintensity_tdf %>%
+  filter(grepl(accessionofinterest, Accession))
+create_fasta_file(tmp, paste0("salmonella_peptide_", accessionofinterest ,".fasta"))
+
+accessionofinterest <- "A0A0H3NGS7"
+tmp <- salmonella_maxLFQintensity_tdf %>%
+  filter(grepl(accessionofinterest, Accession))
+create_fasta_file(tmp, paste0("salmonella_peptide_", accessionofinterest ,".fasta"))
+
+```
+
