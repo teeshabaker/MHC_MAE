@@ -1,0 +1,123 @@
+---
+title: "Fragpipe PCA exploratory analysis"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This script is for running a principal component analysis (PCA) for data exploration to investigate various variables  for their impact-->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries and sets the working directory and the data folder -->
+
+<!-- Please change the working directory and the data.folder as per your directory structure -->
+
+
+```{r cc1, echo=FALSE, warning=FALSE, message=FALSE}
+library(stringr)
+library(dplyr)
+require(ggfortify)
+require(plotly)
+require(factoextra)
+require(AMR)
+
+setwd("/path/to/wd")
+data.folder <- "/path/to/data"
+
+# Read the peptide file
+data <- read.delim(file = paste0(data.folder, "/combined_modified_peptide.tsv"), sep = "\t")
+all_peptides <- data
+
+# Read the annotation file
+annotation <- read.delim(paste0(data.folder, "/experiment_annotation.tsv"), sep = "\t")
+
+
+# Get the unique sample_names
+unique_sample_names <- annotation[!duplicated(annotation$sample_name), ]
+
+# Change the column names to the updated/correct names based on the sample key
+for (i in 1:nrow(unique_sample_names)) {
+  sample <- unique_sample_names$sample[i]
+  sample_name <- unique_sample_names$sample_name[i]
+  
+  # Find the matching column headers with an exact match
+  matching_cols <- which(str_detect(names(all_peptides), paste0("^", sample, "\\.(Spectral\\.Count|Intensity|MaxLFQ\\.Intensity)$")))
+  
+  # Replace the matching column headers with the sample_name
+  names(all_peptides)[matching_cols] <- str_replace(names(all_peptides)[matching_cols], paste0("^", sample), sample_name)
+}
+
+spectral_count_columns <- grep("Spectral.Count", colnames(all_peptides), value = TRUE)
+
+all_peptides <- all_peptides %>%
+  filter(rowSums(dplyr::select(., all_of(spectral_count_columns))) != 0)
+
+# Get the unique conditions
+unique_conditions <- unique_sample_names$condition
+unique_conditions <- unique_conditions[!duplicated(unique_conditions)]
+#sort alphabetically before the very first list is made so all downstream is based on this 
+#sorted unique_conditions vector 
+unique_conditions <- sort(unique_conditions)
+```
+
+<!-- Subsetting on columns to get the MaxLFQIntensity columns -->
+```{r cc2,echo=FALSE, warning=FALSE, message=FALSE}
+pep_sub <- all_peptides[, grepl("MaxLFQ", colnames(all_peptides))]
+```
+
+<!-- Transposing and removing the columns with zero variance -->
+```{r cc3,echo=FALSE, warning=FALSE, message=FALSE}
+pep_sub2= t(pep_sub)
+
+rs = apply(pep_sub2, 2, var)
+
+pep_sub2 = as.data.frame(pep_sub2)
+pep_sub3 <- pep_sub2[ - as.numeric(which(apply(pep_sub2, 2, var) == 0))]
+
+```
+
+
+<!-- PCA computation and visualizing the variance explained by top-few PCs -->
+```{r cc4,echo=FALSE, warning=FALSE, message=FALSE}
+pca <- prcomp(pep_sub3, scale. = TRUE)
+summary(pca)
+fviz_screeplot(pca)
+```
+
+
+<!-- Adding the data from sample key file to check for batch effects -->
+```{r cc5,echo=FALSE, warning=FALSE, message=FALSE}
+pep_sub2$rowname = row.names(pep_sub2) 
+pep_sub2$rowname = gsub("\\..*","",pep_sub2$rowname)
+pep_sub4 = cbind(pep_sub2$rowname,pep_sub3)
+
+sam_key = readxl::read_excel(paste0(data.folder, "/Sample Key.xlsx"), sheet="key")
+
+
+coln = colnames(sam_key)
+coln <- make.names(coln, unique=TRUE)
+
+coln[9] = "sample_name"
+
+colnames(sam_key) = coln
+
+coln = colnames(pep_sub4)
+coln[1] = "sample_name"
+
+colnames(pep_sub4) = coln
+
+
+sam_key2 = sam_key[!duplicated(sam_key[,c('sample_name')]),]
+
+pep_sub5 = dplyr::left_join(pep_sub4, sam_key2, by='sample_name')
+
+```
+
+
+<!-- Checking for condition -->
+```{r cc8,echo=FALSE, warning=FALSE, message=FALSE}
+
+p=autoplot(pca, x=1,y=2,data = pep_sub5, colour = "corrected.condition")
+ggplotly(p)
+```
