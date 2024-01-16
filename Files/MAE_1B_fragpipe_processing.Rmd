@@ -1,0 +1,364 @@
+---
+title: "R code for processing FragPipe for immunopeptides"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This script is for processing the [INPUT FILE] combined_modified_peptide output file from FragPipe and performs the pre-processing to identify the number of peptides/epitopes identified per condition. There are multiple outputs including [OUTPUT FILE] FASTA, pep, and .csv lists for both peptides and epitopes.  -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the working directory and the data folder -->
+
+<!-- Please change the working directory and the data.folder as per your directory structure -->
+
+<!-- Note that in many places, we manually initiate the for loop counter to 1 to avoid any potential bugs -->
+
+
+```{r read in the data, echo=FALSE, message=FALSE, warning=FALSE, comment=F}
+# Load the required packages
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(readxl)
+library(foreach)
+library(doParallel)
+library(topGO)
+library(tools)
+
+
+setwd("/path/to/wd")
+source("./MAE functions.R")
+
+data.folder <- "/path/to/data"
+
+# Read the peptide file
+data <- read.delim(file = paste0(data.folder, "/combined_modified_peptide.tsv"), sep = "\t")
+all_peptides <- data
+
+colnames(all_peptides)[colnames(all_peptides) == "Protein.ID"] <- "Accession"
+colnames(all_peptides)[colnames(all_peptides) == "Protein.Description"] <- "Description"
+```
+
+
+```{r renaming column headers, message=FALSE, warning=FALSE, comment=F, include=FALSE}
+# Read the annotation file
+annotation <- read.delim(paste0(data.folder, "/experiment_annotation.tsv"), sep = "\t")
+
+# Get the unique sample_names
+unique_sample_names <- annotation[!duplicated(annotation$sample_name), ]
+
+# Change the column names to the updated/correct names based on the sample key
+for (i in 1:nrow(unique_sample_names)) {
+  sample <- unique_sample_names$sample[i]
+  sample_name <- unique_sample_names$sample_name[i]
+  
+  # Find the matching column headers with an exact match
+  matching_cols <- which(str_detect(names(all_peptides), paste0("^", sample, "\\.(Spectral\\.Count|Intensity|MaxLFQ\\.Intensity)$")))
+  
+  # Replace the matching column headers with the sample_name
+  names(all_peptides)[matching_cols] <- str_replace(names(all_peptides)[matching_cols], paste0("^", sample), sample_name)
+}
+
+
+all_peptides <- all_peptides %>%
+  filter(!(grepl("BOVIN", Protein) | grepl("Rev", Protein) | grepl("contam", Protein))) %>%
+  filter(Peptide.Length >= 9, Peptide.Length <= 20) %>%
+  distinct(Peptide.Sequence, .keep_all = TRUE)
+
+
+```
+
+```{r}
+spectral_count_columns <- grep("Spectral.Count", colnames(all_peptides), value = TRUE)
+
+all_peptides <- all_peptides %>%
+  filter(rowSums(dplyr::select(., all_of(spectral_count_columns))) != 0)
+
+write.csv(all_peptides, paste0(data.folder,"/combined_all_peptides.csv"))
+
+# Get the unique conditions
+unique_conditions <- unique_sample_names$condition
+unique_conditions <- unique_conditions[!duplicated(unique_conditions)]
+#sort alphabetically before the very first list is made so all downstream is based on this 
+#sorrted unique_conditions vector 
+unique_conditions <- sort(unique_conditions)
+
+
+
+exposure_conditions <- unique_conditions[grep("_10mg", unique_conditions)]
+matching_plain_conditions <- sub("_10mg", "_plain", exposure_conditions)
+
+paired_conditions <- c(exposure_conditions, matching_plain_conditions) 
+paired_conditions <- sort(paired_conditions)
+
+matching_columns <- character(0)
+
+for (condition in exposure_conditions) {
+  matching_columns <- c(matching_columns, grep(condition, colnames(all_peptides), value = TRUE, ignore.case = TRUE))
+}
+
+matching_columns <- unique(matching_columns)
+
+paired_exposures_combined_peptides <- all_peptides %>%
+  dplyr::select(1:16, all_of(matching_columns))
+
+spectral_count_columns <- grep("Spectral.Count", colnames(paired_exposures_combined_peptides), value = TRUE)
+
+paired_exposures_combined_peptides <- paired_exposures_combined_peptides %>%
+  filter(rowSums(dplyr::select(., all_of(spectral_count_columns))) != 0)
+
+write.csv(paired_exposures_combined_peptides, paste0(data.folder,"/combined_paired_exposures_peptides.csv"))
+```
+
+
+```{r creating list of tibbles per condition (combining replicates), echo=FALSE, message=FALSE, warning=FALSE}
+
+# Loop through each unique condition and add it to the list of filtered peptide tibbles 
+i=1
+peptides_ALL.length_tibbles <- list()
+for (i in 1:length(unique_conditions)) {
+  condition <- unique_conditions[i]
+  filtered_cols <- grep(paste0("^", condition), colnames(all_peptides), value = TRUE)
+  selected_cols <- c(names(all_peptides)[1:16], filtered_cols)
+  filtered_tibble <- as_tibble(all_peptides[, selected_cols])
+  peptides_ALL.length_tibbles[[i]] <- filtered_tibble
+}
+
+peptides_ALL.length_tibbles <- lapply(peptides_ALL.length_tibbles, filter_rows)
+peptides_ALL.length_tibbles <- lapply(peptides_ALL.length_tibbles, filter_rows_occurrence, min_occurrence = 2/3)
+names(peptides_ALL.length_tibbles) <- unique_conditions
+
+#filter ALL peptides by 9-11 or 12+ aas 
+peptides_9to11_tibbles <- map(peptides_ALL.length_tibbles, ~ filter_tibble_by_length(.x, "<", 12))
+peptides_12andup_tibbles <- map(peptides_ALL.length_tibbles, ~ filter_tibble_by_length(.x, ">", 11))
+
+#write all peptide files for distribution plot and venn diagrams
+#map(peptides_ALL.length_tibbles, ~write_frag_pep_csvs(.x, data.folder))
+```
+
+
+```{r find epitopes_union, echo=FALSE, message=FALSE, warning=FALSE}
+# Create a new list to store the epitopes tibbles
+epitopes_fromALL.length_union_tibbles <- list()
+epitopes_from9to11_union_tibbles <- list()
+epitopes_from12andup_union_tibbles <- list()
+
+# Loop through each tibble in the peptides_ALL.length_tibbles list to create a list of tibbles of filtered peptides with a subset of columns that will be kept in the epitope tibbles list. 
+i=1
+for (i in 1:length(peptides_ALL.length_tibbles)) {
+  tibble <- peptides_ALL.length_tibbles[[i]]
+  epitopes_tibble <- tibble %>%
+  dplyr::select(Protein, Description, Peptide.Sequence, Start, End) %>%
+  dplyr::rename(Accession = Protein)
+  epitopes_fromALL.length_union_tibbles[[i]] <- epitopes_tibble
+}
+
+i=1
+for (i in 1:length(peptides_9to11_tibbles)) {
+  tibble <- peptides_9to11_tibbles[[i]]
+  epitopes_tibble <- tibble %>%
+  dplyr::select(Protein, Description, Peptide.Sequence, Start, End) %>%
+  dplyr::rename(Accession = Protein)
+  epitopes_from9to11_union_tibbles[[i]] <- epitopes_tibble
+}
+
+i=1
+for (i in 1:length(peptides_12andup_tibbles)) {
+  tibble <- peptides_12andup_tibbles[[i]]
+  epitopes_tibble <- tibble %>%
+  dplyr::select(Protein, Description, Peptide.Sequence, Start, End) %>%
+  dplyr::rename(Accession = Protein)
+  epitopes_from12andup_union_tibbles[[i]] <- epitopes_tibble
+}
+
+names(epitopes_fromALL.length_union_tibbles) <- unique_conditions
+names(epitopes_from9to11_union_tibbles) <- unique_conditions
+names(epitopes_from12andup_union_tibbles) <- unique_conditions
+
+num_cores <- 4  
+cluster <- makeCluster(num_cores)
+registerDoParallel(cluster)
+
+
+epitopes_fromALL.length_union_tibbles <- foreach(df = epitopes_fromALL.length_union_tibbles) %dopar% {
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(df)
+}
+
+epitopes_from9to11_union_tibbles <- foreach(df = epitopes_from9to11_union_tibbles) %dopar% {
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(df)
+}
+
+epitopes_from12andup_union_tibbles <- foreach(df = epitopes_from12andup_union_tibbles) %dopar% {
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(df)
+}
+names(epitopes_fromALL.length_union_tibbles) <- unique_conditions
+names(epitopes_from9to11_union_tibbles) <- unique_conditions
+names(epitopes_from12andup_union_tibbles) <- unique_conditions
+stopCluster(cluster)
+
+```
+
+```{r  fragpipe summary table, echo=TRUE, message=FALSE, warning=FALSE}
+fragpipe_summary_table <- data.frame(matrix(0, nrow = length(peptides_ALL.length_tibbles), ncol = 1))
+colnames(fragpipe_summary_table) <- "condition"
+fragpipe_summary_table$condition <- unique_conditions
+fragpipe_summary_table$`# of Peptides all lengths` <- sapply(peptides_ALL.length_tibbles, nrow)
+fragpipe_summary_table$`# of Peptides 9-11 aas` <- sapply(peptides_9to11_tibbles, nrow)
+fragpipe_summary_table$`# of Peptides 12+ aas` <- sapply(peptides_12andup_tibbles, nrow)
+fragpipe_summary_table$`# of Epitopes from All lengths` <- sapply(epitopes_fromALL.length_union_tibbles, nrow)
+fragpipe_summary_table$`# of Epitopes from 9-11 aas` <- sapply(epitopes_from9to11_union_tibbles, nrow)
+fragpipe_summary_table$`# of Epitopes from 12+ aas ` <- sapply(epitopes_from12andup_union_tibbles, nrow)
+fragpipe_summary_table$`# of Salmonella Epitopes from 9-11 aas` <- sapply(epitopes_from9to11_union_tibbles, function(tibble) sum(grepl("SALTS", tibble$Accession)))
+fragpipe_summary_table$`# of Salmonella Epitopes from 12+ aas` <- sapply(epitopes_from12andup_union_tibbles, function(tibble) sum(grepl("SALTS", tibble$Accession)))
+fragpipe_summary_table$`sum of 9-11 and 12+ epitopes` <- fragpipe_summary_table$`# of Epitopes from 9-11 aas` + fragpipe_summary_table$`# of Epitopes from 12+ aas`
+fragpipe_summary_table$`Sum of Salmonella epitopes` = fragpipe_summary_table$`# of Salmonella Epitopes from 9-11 aas`+fragpipe_summary_table$`# of Salmonella Epitopes from 12+ aas`
+
+#reorder based on the reorder file
+fragpipe_summary_table$condition2 = str_extract(fragpipe_summary_table$condition,"[^_]+")
+order_file = read.csv(paste0(data.folder,"/1000 Genomes Top 30 Globally.csv"))
+order_file$new_sampleid = gsub("NA", "GM", order_file$Sample.ID)
+
+order_file=order_file[trimws(order_file$condition) %in% trimws(fragpipe_summary_table$condition2), ]
+
+xt=match(fragpipe_summary_table$condition2,order_file$condition)
+fragpipe_summary_table = arrange(fragpipe_summary_table,xt)
+
+
+# get the spectral count to append to the table
+all_peptides2 <- data
+colnames(all_peptides2)[colnames(all_peptides2) == "Protein.ID"] <- "Accession"
+colnames(all_peptides2)[colnames(all_peptides2) == "Protein.Description"] <- "Description"
+
+
+annotation <- read.delim(paste0(data.folder, "/experiment_annotation.tsv"), sep = "\t")
+
+# Get the unique sample_names
+unique_sample_names <- annotation[!duplicated(annotation$sample_name), ]
+
+# Change the column names to the updated/correct names based on the sample key
+for (i in 1:nrow(unique_sample_names)) {
+  sample <- unique_sample_names$sample[i]
+  sample_name <- unique_sample_names$sample_name[i]
+  
+  # Find the matching column headers with an exact match
+  matching_cols <- which(str_detect(names(all_peptides2), paste0("^", sample, "\\.(Spectral\\.Count|Intensity|MaxLFQ\\.Intensity)$")))
+  
+  # Replace the matching column headers with the sample_name
+  names(all_peptides2)[matching_cols] <- str_replace(names(all_peptides2)[matching_cols], paste0("^", sample), sample_name)
+}
+
+
+all_peptides2 <- all_peptides2 %>%
+  filter(! grepl("Rev", Protein) ) 
+
+
+nr = data.frame()
+for(cond in unique(fragpipe_summary_table$condition)){
+  temp = select(all_peptides2,contains(cond))
+  temp = select(temp,contains("Spectral"))
+  nrep=ncol(temp)
+  nr = rbind(nr,c(cond,nrep,sum(temp)))
+  
+}
+colnames(nr) = c("condition","replicate","spectral_count")
+
+fragpipe_summary_table = left_join(fragpipe_summary_table,nr,by="condition")
+
+write.csv(fragpipe_summary_table,paste0(data.folder,"/fragpipe_summary_table.csv"))
+```
+
+```{r write output files, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#Create "output" folder if it doesn't exist
+if (!file.exists(paste0(data.folder, "/output"))) {
+  # Create "output" folder if it doesn't exist
+  dir.create(paste0(data.folder, "/output"), showWarnings = FALSE)
+}
+
+#full information files are more for informational purposes, to view all the metadata 
+#.pep files can be used with GibbsCluster 
+#FASTA output can be found below 
+
+#full peptides file 
+  map(unique_conditions, function(cond) write_csv(peptides_ALL.length_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_ALL-lengths_fragpipe", ".csv")))
+#only sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(peptides_ALL.length_tibbles[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_ALL-lengths_fragpipe", ".pep"  ), col_names = F))
+
+  
+#filtered only 9-11 aa full peptides file 
+  map(unique_conditions, function(cond) write_csv(peptides_9to11_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_9to11_fragpipe", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(peptides_9to11_tibbles[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_9to11_fragpipe", ".pep"  ), col_names = F))
+
+  
+#filtered only 12+ aa full peptides file 
+  map(unique_conditions, function(cond) write_csv(peptides_12andup_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_12andup_fragpipe", ".csv")))
+#filtered 12+ aas sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(peptides_12andup_tibbles[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_12andup_fragpipe", ".pep"  ), col_names = F))
+
+
+#peptides compressed to epitopes  
+  map(unique_conditions, function(cond) write_csv(epitopes_fromALL.length_union_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_fromALL-lengths_union_fragpipe", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(epitopes_fromALL.length_union_tibbles[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_fromALL-lengths_union_fragpipe", ".pep"  ), col_names = F))
+  
+  
+#filtered only 9-11 aa then compressed to epitopes  
+  map(unique_conditions, function(cond) write_csv(epitopes_from9to11_union_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_from9to11_union_fragpipe", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(epitopes_from9to11_union_tibbles[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_from9to11_union_fragpipe", ".pep"  ), col_names = F))
+ 
+
+#filtered only 12+ aa then compressed to epitopes  
+  map(unique_conditions, function(cond) write_csv(epitopes_from12andup_union_tibbles[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_from12andup_union_fragpipe", ".csv")))
+#filtered 12+ aas sequences as .pep  
+  map(unique_conditions, function(cond) write_csv(as.data.frame(epitopes_from12andup_union_tibbles[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_from12andup_union_fragpipe", ".pep"  ), col_names = F))
+ 
+
+```
+
+```{r}
+# Create a single list of unique epitopes (PER CELL LINE) to be searched with netMHCpan 
+#this is the absolute shortest file per cell line that can be searched while still including 
+#every amino acid that was detected by the instrument regarless of final peptide length
+#to be searched against both netMHCpan and netMHCIIpan to be fully encompasing in the search
+#so that netMHCpan never has to be done again even if peptides are moved between Classes 
+#or combined into different epitopes, that sequence still would have been searched against 
+#both netMHCpan and netMHCIIpan 
+unique_cell_lines <- gsub("_.*", "", unique_conditions)
+unique_cell_lines <- unique(unique_cell_lines)
+cell_line <- unique_cell_lines[1]
+# Loop through each unique cell line and create a corresponding fasta file
+walk(unique_cell_lines, function(cell_line) {
+  combined_tibble <- NULL
+  
+  # Filter the epitopes_fromALL.length_union_tibbles list for the current cell line name match
+  epitopes_fromALL.length_union_tibbles_filtered <- epitopes_fromALL.length_union_tibbles[grep(cell_line, names(epitopes_fromALL.length_union_tibbles), fixed = TRUE)]
+  
+  # Combine the filtered tibbles
+  combined_tibble <- bind_rows(epitopes_fromALL.length_union_tibbles_filtered)
+  
+  # Create a unique tibble based on Epitope
+  combined_tibble_unique <- distinct(combined_tibble, Epitope, .keep_all = TRUE)
+  
+  # Get the subfolder name from data.folder
+  subfolder_name <- basename(data.folder)
+  
+  # Create a fasta file for the current cell line with subfolder name
+  output_file <- paste0(data.folder, "/output/", gsub(" ", "_", subfolder_name), "_combined_epitopes_", cell_line, "_byonic.fasta")
+  create_fasta_file(combined_tibble_unique, output_file)
+  write.csv(combined_tibble_unique, file = paste0(file_path_sans_ext(output_file),".csv"))
+})
+
+```
+
+
