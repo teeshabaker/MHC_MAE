@@ -1,0 +1,204 @@
+---
+title: "R code for processing byonic files"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This script is for processing the [INPUT FILE] excel output files from Byonic and performs the pre-processing to identify the number of peptides/epitopes identified per condition. There are multiple outputs including [OUTPUT FILE] FASTA, pep, and .csv lists for both peptides and epitopes.  -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the working directory and the data folder -->
+
+<!-- Please change the working directory and the data.folder as per your directory structure -->
+
+```{r load libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(lubridate)
+library(doParallel)
+
+
+cond_epitopes_fromALL.length_union <- NULL 
+setwd("/path/to/wd")
+data.folder <- "/path/to/data"
+
+source("./MAE functions.R")
+```
+
+```{r process files, echo=FALSE, message=FALSE, warning=FALSE}
+file_paths <- list.files(data.folder, full.names = T, pattern = "\\.xlsx") %>%
+  tibble() %>%
+  setNames("path") %>%
+  mutate(file = basename(tools::file_path_sans_ext(path))) %>%
+  separate(2, c("date", "exp", "cell.line", "cond", "rep", "frac"), remove = FALSE, sep = "_") %>%
+  mutate(unique_name = paste(exp, cell.line, cond, sep = "_"))
+
+
+
+byonic_annotation <- NULL
+byonic_annotation <- file_paths %>%
+  distinct(exp, cell.line, cond, .keep_all = TRUE) %>%
+  arrange(date, exp, cell.line, cond) #%>%
+conds <- byonic_annotation %>%
+  pull(unique_name)
+
+cond_split <- NULL
+cond_split <- file_paths %>%
+  group_by(exp, cell.line, cond) %>%
+  group_split()
+cond_split <- setNames(cond_split, sapply(cond_split, function(df) unique(df$unique_name)))
+cond_split <- cond_split[match(conds, names(cond_split))]
+
+
+
+#read in data and create list of peptides 
+cond_peptides_ALL <- map(cond_split, ~bind_replicates(.x, min_percentage = 2/3))
+cond_peptides_9to11 <- map(cond_peptides_ALL, ~ filter_tibble_by_length(.x, "<", 12))
+cond_peptides_12andup <- map(cond_peptides_ALL, ~ filter_tibble_by_length(.x, ">", 11))
+
+
+
+num_cores <- 4  
+cluster <- makeCluster(num_cores)
+registerDoParallel(cluster)
+
+cond_epitopes_fromALL.length_union <- list()
+cond_epitopes_fromALL.length_union <- foreach(tibble = cond_peptides_ALL) %dopar% {
+  library(purrr)
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(tibble)
+}
+
+cond_epitopes_from9to11_union <- list()
+cond_epitopes_from9to11_union <- foreach(tibble = cond_peptides_9to11) %dopar% {
+  library(purrr)
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(tibble)
+}
+
+cond_epitopes_from12andup_union <- list() 
+cond_epitopes_from12andup_union <- foreach(tibble = cond_peptides_12andup) %dopar% {
+  library(purrr)
+  library(dplyr)
+  library(stringr)
+  find_epitopes_union(tibble)
+}
+
+names(cond_epitopes_fromALL.length_union) <- conds
+names(cond_epitopes_from9to11_union) <- conds
+names(cond_epitopes_from12andup_union) <- conds
+
+stopCluster(cluster)
+```
+
+```{r  summary table, echo=FALSE, message=FALSE, warning=FALSE}
+nr = data.frame()
+for(path in file_paths$path){
+  td = count_byonic_spectra(path)
+  nr = rbind(nr,c(path,td))
+}
+
+nr$unique_name = file_paths$unique_name
+colnames(nr) = c("path","count","unique_name")
+nr$count = as.numeric(nr$count)
+spec_match = aggregate(nr$count, by=list(Category=nr$unique_name), FUN=sum)
+
+byonic_summary_table <- data.frame(matrix(0, nrow = length(cond_peptides_ALL), ncol = 1))
+colnames(byonic_summary_table) <- "condition"
+byonic_summary_table$condition <- conds
+byonic_summary_table$`# of spectra matched` <- spec_match$x
+byonic_summary_table$`# of Peptides all lengths` <- sapply(cond_peptides_ALL, nrow)
+byonic_summary_table$`# of Peptides 9-11 aas` <- sapply(cond_peptides_9to11, nrow)
+byonic_summary_table$`# of Peptides 12+ aas` <- sapply(cond_peptides_12andup, nrow)
+byonic_summary_table$`# of Epitopes from All lengths` <- sapply(cond_epitopes_fromALL.length_union, nrow)
+byonic_summary_table$`# of Epitopes from 9-11 aas` <- sapply(cond_epitopes_from9to11_union, nrow)
+byonic_summary_table$`# of Epitopes from 12+ aas ` <- sapply(cond_epitopes_from12andup_union, nrow)
+byonic_summary_table$`# of Salmonella Epitopes` <- sapply(cond_epitopes_fromALL.length_union, function(tibble) sum(grepl("SALTS", tibble$Accession)))
+byonic_summary_table$`sum of 9-11 and 12+ epitopes` <- byonic_summary_table$`# of Epitopes from 9-11 aas` + byonic_summary_table$`# of Epitopes from 12+ aas`
+print(byonic_summary_table)
+```
+
+```{r write, message=FALSE, warning=FALSE, include=FALSE}
+#Create "output" folder if it doesn't exist
+if (!file.exists(paste0(data.folder, "/output"))) {
+  dir.create(paste0(data.folder, "/output"), showWarnings = FALSE)
+}
+
+  
+#full information files are for informational purposes, to view all the metadata 
+#.pep files can be used with GibbsCluster 
+#FASTA output can be found below 
+
+#full peptides file 
+  map(conds, function(cond) write_csv(cond_peptides_ALL[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_ALL-lengths_byonic", ".csv")))
+#only sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_peptides_ALL[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_ALL-lengths_byonic", ".pep"  ), col_names = F))
+
+  
+#filtered only 9-11 aa full peptides file 
+  map(conds, function(cond) write_csv(cond_peptides_9to11[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_9to11_byonic", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_peptides_9to11[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_9to11_byonic", ".pep"  ), col_names = F))
+
+  
+#filtered only 12+ aa full peptides file 
+  map(conds, function(cond) write_csv(cond_peptides_12andup[[cond]], file = paste0(data.folder, "/output/", cond, "_peptides_12andup_byonic", ".csv")))
+#filtered 12+ aas sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_peptides_12andup[[cond]]$Peptide.Sequence), file = paste0(data.folder, "/output/", cond, "_peptides_12andup_byonic", ".pep"  ), col_names = F))
+
+
+#peptides compressed to epitopes  
+  map(conds, function(cond) write_csv(cond_epitopes_fromALL.length_union[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_fromALL-lengths_union_byonic", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_epitopes_fromALL.length_union[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_fromALL-lengths_union_byonic", ".pep"  ), col_names = F))
+  
+
+#peptides filtered only 9-11 aa then compressed to epitopes  
+  map(conds, function(cond) write_csv(cond_epitopes_from9to11_union[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_from9to11_union_byonic", ".csv")))
+#filtered 9-11 aas sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_epitopes_from9to11_union[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_from9to11_union_byonic", ".pep"  ), col_names = F))
+ 
+
+#peptides filtered only 12+ aa then compressed to epitopes  
+  map(conds, function(cond) write_csv(cond_epitopes_from12andup_union[[cond]], file = paste0(data.folder, "/output/", cond, "_epitopes_from12andup_union_byonic", ".csv")))
+#filtered 12+ aas sequences as .pep  
+  map(conds, function(cond) write_csv(as.data.frame(cond_epitopes_from12andup_union[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_from12andup_union_byonic", ".pep"  ), col_names = F))
+
+
+
+# Create a single list of unique epitopes (PER CELL LINE) to be searched with netMHCpan 
+#this is the absolute shortest file per cell line that can be searched while still including 
+#every amino acid that was detected by the instrument regarless of final peptide length
+#to be searched against both netMHCpan and netMHCIIpan to be fully encompasing in the search
+#so that netMHCpan never has to be done again even if peptides are moved between Classes 
+#or combined into different epitopes, that sequence still would have been searched against 
+#both netMHCpan and netMHCIIpan 
+unique_cell_lines <- unique(file_paths$cell.line)
+# Loop through each unique cell line and create a corresponding fasta file
+walk(unique_cell_lines, function(cell_line) {
+  combined_tibble <- NULL
+  
+  # Filter the cond_epitopes_fromALL.length_union list for the current cell line name match
+  cond_epitopes_fromALL.length_union_filtered <- cond_epitopes_fromALL.length_union[grep(cell_line, names(cond_epitopes_fromALL.length_union), fixed = TRUE)]
+  
+  # Combine the filtered tibbles
+  combined_tibble <- bind_rows(cond_epitopes_fromALL.length_union_filtered)
+  
+  # Create a unique tibble based on Epitope
+  combined_tibble_unique <- distinct(combined_tibble, Epitope, .keep_all = TRUE)
+  
+  # Get the subfolder name from data.folder
+  subfolder_name <- basename(data.folder)
+  
+  # Create a fasta file for the current cell line with subfolder name
+  output_file <- paste0(data.folder, "/output/", gsub(" ", "_", subfolder_name), "_combined_epitopes_", cell_line, "_byonic.fasta")
+  create_fasta_file(combined_tibble_unique, output_file)
+})
+```
