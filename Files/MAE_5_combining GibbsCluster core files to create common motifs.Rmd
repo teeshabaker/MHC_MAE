@@ -1,0 +1,72 @@
+---
+title: "R code for combining GibbsCluster core files to create common motifs"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This script is for combining sequences from mulitple [INPUT FILE] .core files from GibbsCluster to create a summarized [OUTPUT FILE] FASTA file   -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the directories -->
+
+
+```{r setup,  message=FALSE, warning=FALSE, echo=FALSE}
+library(tibble)
+library(dplyr)
+
+# all functions for MAE processing can be found in:
+source("./MAE functions.R")
+
+#variables that need to be assigned for this script:
+parent_dir <- "/path/to/folder"
+subfolders <- c("MHC-I", "MHC-II")
+column_header <- "sequences"
+```
+
+<!-- A summary table listing the number of sequences per .core file can be found in -->
+```{r sequences per .core file,  message=FALSE, warning=FALSE, echo=FALSE}
+#create a list of core files for each common motif 
+core_files <- list.files(path = parent_dir, pattern = "\\.core$", recursive = TRUE, full.names = TRUE)
+data_frames_list <- lapply(core_files, function(file) {
+  data <- read.delim(file, header = FALSE)
+  condition_name <- stringr::str_extract(file, "common_motif_\\d+")
+  last_digit <- as.numeric(substr(stringr::str_extract(file, "gibbs.(\\d+)of(\\d+)"), nchar(stringr::str_extract(file, "gibbs.(\\d+)of(\\d+)")), nchar(stringr::str_extract(file, "gibbs.(\\d+)of(\\d+)"))))
+  mhc_type <- ifelse(last_digit == 7, "MHC-I", "MHC-II")
+  data.frame(
+    Condition = condition_name,
+    MHC_Type = mhc_type,
+    Rows = nrow(data),
+    Core_File=basename(file)
+  )
+})
+
+#create a summary table listing the number of sequences per core file 
+final_data_frame <- do.call(rbind, data_frames_list)
+output_file_path <- file.path(parent_dir, "number_of_epitopes_per_cluster_from_GibbsCluster.csv")
+write.csv(final_data_frame, file = output_file_path, row.names = FALSE)
+print(parent_dir, quote = FALSE)
+```
+
+<!-- List of common motifs -->
+```{r  message=FALSE, warning=FALSE, echo=FALSE}
+for (subfolder in subfolders) {
+  subfolder_path <- file.path(parent_dir, subfolder)
+  subsubfolders <- list.dirs(subfolder_path, full.names = TRUE, recursive = FALSE)
+  for (subsubfolder in subsubfolders) {
+    sequences_tibble <- tibble(sequences = character(0))
+    core_files <- list.files(path = subsubfolder, pattern = "\\.core$", full.names = TRUE)
+    for (core_file in core_files) {
+      sequences <- readLines(core_file)
+      sequences_tibble <- bind_rows(sequences_tibble, tibble(sequences = sequences))
+    }
+    output_file <- file.path(subsubfolder, paste0(basename(subsubfolder), "_motif.fasta"))
+    create_fasta_file_new(sequences_tibble, column_header, output_file)
+  }
+  print(basename(subsubfolders), quote = FALSE)
+}
+``` 
+
+<!-- These FASTA files can be used with Seq2Logo to make a sequence logo and frequency matrix for the combined common motif.  -->
+<!-- After converting the Seq2Logo matrix to a MEME format matrix, FIMO can be used to query any protein of interest for sequences with high sequence similarity to any of the common binding motifs.  -->
