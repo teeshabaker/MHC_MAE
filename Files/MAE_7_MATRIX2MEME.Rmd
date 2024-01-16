@@ -1,0 +1,72 @@
+---
+title: "R code for creating frequency matrix readable by MATRIX2MEME from MEMESuite"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+<!-- This script is for [INPUT FILE] a combined .mat frequency matrix from MAE_3 to create [OUTPUT FILE] a .txt frequency matrix that is readable by MATRIX2MEME from MEMESuite. -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the directory path -->
+
+```{r setup and variables that need to be assigned,  message=FALSE, warning=FALSE, echo=FALSE}
+# all functions for MAE processing can be found in:
+source("./MAE functions.R")
+
+#variables that need to be assigned for this script:
+directory_path <- "/path/to/data"
+```
+
+```{r list of frequency matrix files,  message=FALSE, warning=FALSE, echo=FALSE}
+file_list <- list.files(directory_path, pattern = "freq.mat$", full.names = TRUE)
+
+# create list of tables of matrices 
+df_list <- list()
+for (file_path in file_list) {
+  df <- read.table(file_path, skip = 3, header = FALSE)
+  col_names <- c("position", "sequence", "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V")
+  names(df) <- col_names
+  df_list[[basename(file_path)]] <- df
+}
+```
+
+<!-- Consensus sequences  -->
+```{r create a summary table of consensus sequences,  message=FALSE, warning=FALSE, echo=FALSE}
+df_list_reordered <- lapply(df_list, reorder_columns_alphabetically)
+summary_table <- data.frame(matrix(ncol = (length(df_list_reordered)), nrow = 0))
+for (i in 1:length(df_list_reordered)) {
+  col_to_insert <- t(df_list_reordered[[i]][, 2])  
+  summary_table <- rbind(summary_table, col_to_insert)
+}
+rownames(summary_table) <- sub("\\_summary_motif_freq.mat$", "", names(df_list_reordered))
+colnames(summary_table) <-c(paste("position", 1:9))
+summary_table$consensus.sequence <- apply(summary_table, 1, function(row) paste0(row, collapse = ""))
+print(data.frame(summary_table$consensus.sequence, row.names = sub("\\_summary_motif_freq.mat$", "", names(df_list_reordered))))
+```
+
+<!-- Outputs -->
+```{r list of output directories,  message=FALSE, warning=FALSE, echo=FALSE}
+print(paste0("A csv of the consensus sequences and txt files of the MEME format matrices can be found in:", directory_path), quote = FALSE)
+```
+
+<!-- These .txt files can be used with MATRIX2MEME to convert the frequency matrix to a MEME format matrix. -->
+<!-- Once in MEME format, FIMO can be used to query any protein of interest for any 9-mer sequences that have high sequence similarity to any of the common binding motifs.  -->
+
+```{r consensus sequence csv output,  message=FALSE, warning=FALSE, echo=FALSE}
+output_file <- file.path(directory_path, "consensus sequences for common binding motifs MHC-I and MHC-II.csv")
+write.csv(summary_table, file = output_file, row.names = TRUE)
+```
+
+
+```{r MEME format matrix txt output,  message=FALSE, warning=FALSE, echo=FALSE}
+# write txt files of each frequency matrix that is readable by MEME
+for (i in 1:length(df_list_reordered)) {
+  current_df <- df_list_reordered[[i]]
+  current_df <- current_df[, -(1:2)]
+  df_name <- names(df_list_reordered)[i]
+  df_name <- sub("\\_summary_motif_freq.mat$", "", df_name)
+  output_file <- file.path(directory_path, paste0(df_name, "_forMATRIX2MEME.txt"))
+  write.table(current_df, file = output_file, sep = "\t", row.names = FALSE, col.names = FALSE)
+}
+```
