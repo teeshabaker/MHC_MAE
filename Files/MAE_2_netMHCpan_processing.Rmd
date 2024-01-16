@@ -1,0 +1,403 @@
+---
+title: " R code for processing netMHCpan files"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+<!-- This code is for taking netMHCpan files as input, and creating a summarized list of binders, and their corresponding allele, based on binding strength.  -->
+<!-- netMHCpan files need to be searched with EL and BA  -->
+<!-- output .xls files need the allele headers moved into the row below, save as .xlsx -->
+
+<!-- The code can be run code chunk by code chunk or can be knitted as an rmarkdown file -->
+
+<!-- The first code chunk loads the required libraries, functions from MAE functions.R file and sets the working directory and the data folder -->
+
+<!-- Please change the working directory and the data.folder as per your directory structure -->
+
+
+<!-- The data.folder should be "data" with any projects housed as sub-folders within this data.folder. -->
+
+<!-- Note that in many places, we manually initiate the for loop counter to 1 to avoid any bugs -->
+
+<!-- This file uses the byonic or fragpipe variables created using the previous code files, please use the relevant variables as specified in the code below -->
+
+
+```{r load libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readxl)
+library(readr)
+library(purrr)
+library(ggplot2)
+library(msa)
+library(seqinr)
+library(beepr)
+library(foreach)
+library(doParallel)
+library(forcats)
+
+
+setwd("/path/to/wd")
+source("/MAE functions.R")
+data.folder <- "/path/to/data"
+netMHCpan_folder_path <- paste0(data.folder, "\\","netMHCpan_folder")
+
+# the following two variables are to be assigned using the epitopes variables created by either running byonic (cond_epitopes_from[length]_union) or fragpipe (epitopes_from[length]_union_tibbles) code files
+epitopes_9to11_tibbles_MAEOptimization <- epitopes_from9to11_union_tibbles
+epitopes_12andup_tibbles_MAEOptimization <- epitopes_from12andup_union_tibbles
+
+# the following variable is to be assigned using the variables created by using conditions_MAEOptimization variables (byonic (conds) or fragpipe (unique_conditions)) from the other code files
+conditions_MAEOptimization <- unique_conditions
+
+
+# file naming system for netMHCpan files to make sure this accurately extracts I vs II 
+MHCIfilename <- "Cp"
+MHCIIfilename <- "CIIp"
+
+files <- list.files(data.folder, pattern = "\\.xls$", full.names = TRUE)
+```
+
+```{r read in data, message=FALSE, warning=FALSE, echo=FALSE}
+# Iterate over each condition to produce a list of tibbles of strongest netMHCpan binders
+i=1
+num_cores <- 4  
+cluster <- makeCluster(num_cores)
+registerDoParallel(cluster)
+binders_tibbles_MAEOptimization <- list() 
+binders_tibbles_MAEOptimization <- foreach(i = seq_along(conditions_MAEOptimization)) %dopar% {
+  result_df <- data.frame(File = character(),
+                          Peptide.Sequence = character(),
+                          Allele = character(),
+                          Rank = numeric(),
+                          stringsAsFactors = FALSE)
+  
+  # use a single pattern, either for fragpipe or byonic based on your input, and comment out the other one
+  
+  # pattern for fragpipe 
+  pattern <- gsub("[[:punct:][:space:]]+", "_", conditions_MAEOptimization[i])
+  
+  # pattern for byonic 
+  #pattern <- sub("^[^_]*_(.*?)_[^_]*$", "\\1", conditions_MAEOptimization[i])
+ 
+
+  pattern <- paste0(".*", pattern, ".*")  # Use .* to match any characters before and after
+  condition_files <- files[grep(pattern, basename(files))]
+  # Iterate over each MHC file 
+  j=1
+  for (j in 1:length(condition_files)) {
+    data <- read.delim(condition_files[j], sep = "\t", header = FALSE)
+    if (grepl(MHCIfilename, basename(condition_files[j]))) {
+      # Replace "1-log50k" entries in the second row with values from the row above and one column to the left
+      for (col in 2:ncol(data)) {
+        if (data[2, col] == "EL-score") {
+          data[2, col] <- data[1, col - 2]
+        }
+      }
+    } else if (grepl(MHCIIfilename, basename(condition_files[j]))) {
+      # Replace "1-log50k" entries in the second row with values from the row above and one column to the right
+      for (col in 2:ncol(data)) {
+        if (data[2, col] == "nM") {
+          data[2, col] <- data[1, col]
+        }
+      } 
+    }
+  
+    colnames(data) <- data[2, ]
+    data <- data[-c(1, 2), ]
+    rank_cols <- grepl("Rank", colnames(data))
+    data[rank_cols] <- lapply(data[rank_cols], as.numeric)
+    data$NB <- as.numeric(data$NB)
+    data_filtered <- data[data$NB != 0, ]
+    data_filtered <- data_filtered[, !grepl("^BA", colnames(data))]
+    allele_columns <- grep("^HLA|^DR", colnames(data_filtered))
+    rank_columns <- grep("Rank", colnames(data_filtered))
+    
+    # Iterate over each peptide
+    x=1
+    for (x in 1:nrow(data_filtered)) {
+      # Get the allele names for the peptide
+      alleles <- character()
+      y=1
+      for (y in 1:length(allele_columns)) {
+        allele_name <- colnames(data_filtered)[allele_columns[y]]
+        allele <- allele_name
+        alleles <- c(alleles, allele)
+      }
+      ranks <- unlist(data_filtered[x, rank_columns])
+      lowest_rank <- min(ranks, na.rm = TRUE)
+      lowest_rank_index <- which(ranks == lowest_rank)[1]
+      allele <- alleles[lowest_rank_index]
+      result_row <- data.frame(File = condition_files[j], Peptide.Sequence = data_filtered[x, "Peptide"],
+                               Allele = allele, Rank = lowest_rank)
+      result_df <- rbind(result_df, result_row)
+    }
+  }
+  binders_tibbles_MAEOptimization[[i]] <- result_df
+}
+
+names(binders_tibbles_MAEOptimization) <- conditions_MAEOptimization
+
+# Filter for distinct binding cores (the same binding core can show up in multiple epitopes)
+binders_tibbles_MAEOptimization <- map(binders_tibbles_MAEOptimization, ~distinct(.x, Allele, Peptide.Sequence, .keep_all = TRUE))
+
+# Remove NAs - edge case where a single empty peptide can throw an Inf
+binders_tibbles_MAEOptimization <- map(binders_tibbles_MAEOptimization, ~subset(.x, !is.na(.x$Peptide.Sequence)))
+
+# A list where each peptides is only predicted to bind to one allele - no duplicates between I VS II
+# Lowest rank is chosen as the strongest binder 
+binders_strongest.allele_tibbles_MAEOptimization <- list() 
+for (i in 1:length(binders_tibbles_MAEOptimization)) {
+  binders_strongest.allele_tibbles_MAEOptimization[[i]] <- binders_tibbles_MAEOptimization[[i]] %>%
+  group_by(Peptide.Sequence) %>%
+  filter(Rank == min(Rank))
+}
+names(binders_strongest.allele_tibbles_MAEOptimization) <- conditions_MAEOptimization
+
+stopCluster(cluster)
+```
+
+
+```{r determine if each epitope is a binder or not, message=FALSE, warning=FALSE, echo=FALSE}
+# String match the binding core to the epitope and add that binding allele to a new column in epitopes_ALL_tibbles_MAEOptimization
+
+num_cores <- 4  
+cluster <- makeCluster(num_cores)
+registerDoParallel(cluster)
+
+
+i=1
+epitopes_9to11_withbinders_tibbles_MAEOptimization <- list()
+epitopes_9to11_withbinders_tibbles_MAEOptimization <- foreach(i = seq_along(epitopes_9to11_tibbles_MAEOptimization)) %dopar% {
+  require(stringr)
+  relevant_binders <- binders_tibbles_MAEOptimization[[i]]
+  relevant_binders <- relevant_binders[grepl("HLA-A|HLA-B|HLA-C", relevant_binders$Allele), ]
+  epitopes_9to11_withbinders_tibbles_MAEOptimization[[i]] <- add_matching_columns(epitopes_9to11_tibbles_MAEOptimization[[i]], relevant_binders)
+}
+
+i=1
+epitopes_12andup_withbinders_tibbles_MAEOptimization <- list()
+epitopes_12andup_withbinders_tibbles_MAEOptimization <- foreach(i = seq_along(epitopes_12andup_tibbles_MAEOptimization)) %dopar% {
+  require(stringr)
+  relevant_binders <- binders_tibbles_MAEOptimization[[i]]
+  relevant_binders <- relevant_binders[grepl("HLA-DQ|DRB|HLA-DP", relevant_binders$Allele), ]
+  epitopes_12andup_withbinders_tibbles_MAEOptimization[[i]] <- add_matching_columns(epitopes_12andup_tibbles_MAEOptimization[[i]], relevant_binders)
+}
+
+
+names(epitopes_9to11_withbinders_tibbles_MAEOptimization) <- conditions_MAEOptimization
+names(epitopes_12andup_withbinders_tibbles_MAEOptimization) <- conditions_MAEOptimization
+
+
+epitopes_9to11_onlybinders_tibbles_MAEOptimization <- map(epitopes_9to11_withbinders_tibbles_MAEOptimization, ~ filter(.x, !is.na(Allele)))
+epitopes_12andup_onlybinders_tibbles_MAEOptimization <- map(epitopes_12andup_withbinders_tibbles_MAEOptimization, ~ filter(.x, !is.na(Allele)))
+
+stopCluster(cluster)
+
+# write binder files 
+map(conditions_MAEOptimization, function(cond) write_csv(as.data.frame(epitopes_9to11_onlybinders_tibbles_MAEOptimization[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_9to11_union_fragpipe_binders", ".pep"), col_names = F))
+map(conditions_MAEOptimization, function(cond) write_csv(as.data.frame(epitopes_12andup_onlybinders_tibbles_MAEOptimization[[cond]]$Epitope), file = paste0(data.folder, "/output/", cond, "_epitopes_12andup_union_fragpipe_binders", ".pep"), col_names = F))
+```
+
+
+```{r _MAEOptimization plots, message=FALSE, warning=FALSE, echo=FALSE}
+# Create the data frame
+bindersvsnonbinders_table_MAEOptimization <- data.frame(matrix(0, nrow = 2, ncol = length(conditions_MAEOptimization)))
+rownames(bindersvsnonbinders_table_MAEOptimization) <- c("binders", "nonbinders")
+colnames(bindersvsnonbinders_table_MAEOptimization) <- conditions_MAEOptimization
+
+
+i=1 
+for (i in 1:ncol(bindersvsnonbinders_table_MAEOptimization)) {
+  bindersvsnonbinders_table_MAEOptimization["nonbinders",i] <- sum(is.na(epitopes_9to11_withbinders_tibbles_MAEOptimization[[i]]$Allele), is.na(epitopes_12andup_withbinders_tibbles_MAEOptimization[[i]]$Allele))
+}
+j=1 
+for (j in 1:ncol(bindersvsnonbinders_table_MAEOptimization)) {
+  bindersvsnonbinders_table_MAEOptimization["binders",j] <- sum(!is.na(epitopes_9to11_withbinders_tibbles_MAEOptimization[[j]]$Allele), !is.na(epitopes_12andup_withbinders_tibbles_MAEOptimization[[j]]$Allele))
+}
+
+bindersvsnonbinders_table_MAEOptimization <- as.data.frame(t(bindersvsnonbinders_table_MAEOptimization))
+bindersvsnonbinders_table_MAEOptimization$total <- bindersvsnonbinders_table_MAEOptimization$binders + bindersvsnonbinders_table_MAEOptimization$nonbinders
+bindersvsnonbinders_table_MAEOptimization$Condition <- conditions_MAEOptimization
+bindersvsnonbinders_table_MAEOptimization$Condition <- factor(bindersvsnonbinders_table_MAEOptimization$Condition, levels = conditions_MAEOptimization)
+bindersvsnonbinders_table_MAEOptimization$percent <- round((bindersvsnonbinders_table_MAEOptimization$binders / bindersvsnonbinders_table_MAEOptimization$total) * 100, digits = 1)
+
+
+bindersvsnonbinders_table_MAEOptimization$condition2=str_extract(bindersvsnonbinders_table_MAEOptimization$Condition,"[^_]+")
+
+# reorder data using the order_file created in script 1B
+xt=match(bindersvsnonbinders_table_MAEOptimization$condition2,order_file$condition)
+bindersvsnonbinders_table_MAEOptimization = arrange(bindersvsnonbinders_table_MAEOptimization,xt)
+print(bindersvsnonbinders_table_MAEOptimization)
+
+#write.csv(bindersvsnonbinders_table_MAEOptimization,paste0(data.folder, "/output/","binders_nonbinders.csv"))
+
+
+# Reshape the data to long format
+bindersvsnonbinders_table_long_MAEOptimization <- pivot_longer(bindersvsnonbinders_table_MAEOptimization, cols = c(binders, nonbinders), names_to = "Type", values_to = "Count")
+
+# Create the horizontal stacked bar graph with legend, modified axes, and appearance
+bindersvsnonbinders_table_long_MAEOptimization$Percent <- bindersvsnonbinders_table_long_MAEOptimization$Count / bindersvsnonbinders_table_long_MAEOptimization$total * 100
+
+bindersvsnonbinders_table_long_MAEOptimization$Condition <- factor(bindersvsnonbinders_table_long_MAEOptimization$Condition, levels = unique(bindersvsnonbinders_table_long_MAEOptimization$Condition))
+bindersvsnonbinders_table_long_MAEOptimizationun =  bindersvsnonbinders_table_long_MAEOptimization[!duplicated(bindersvsnonbinders_table_long_MAEOptimization[2]),]
+
+# remove 10mg samples
+bindersvsnonbinders_table_long_MAEOptimizationsmall=bindersvsnonbinders_table_long_MAEOptimization[!grepl("10mg",bindersvsnonbinders_table_long_MAEOptimization$Condition),]
+
+bindersvsnonbinders_table_long_MAEOptimizationun =  bindersvsnonbinders_table_long_MAEOptimizationsmall[!duplicated(bindersvsnonbinders_table_long_MAEOptimizationsmall[2]),]
+
+bindervsnonbinder_plot_MAEOptimization <- ggplot(bindersvsnonbinders_table_long_MAEOptimizationsmall, aes(x = fct_rev(Condition), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("binders" = "#525252", "nonbinders" = "#999999"),
+                    labels = c("Binders", "Non-Binders"),
+                    guide = guide_legend(reverse = TRUE)) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimizationsmall, aes(label = Count), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimizationun, aes(label = total,y=total+10),position=position_dodge(width = 1),
+           hjust=-0.3,color = "black", size = 3)+
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "netMHCpan prediction")) +
+  theme(legend.position = "top",
+        panel.grid = element_blank()
+        #axis.ticks = element_blank(),
+        #axis.text.x = element_blank()
+        )+
+  coord_flip()
+
+print(bindervsnonbinder_plot_MAEOptimization)
+
+## subset plot
+bindersvsnonbinders_table_long_MAEOptimizationsub = subset(bindersvsnonbinders_table_long_MAEOptimization,bindersvsnonbinders_table_long_MAEOptimization$Condition %in% c("GM20346_10mg",
+"GM20346_plain",
+"HG02386_10mg",
+"HG02386_plain",
+"HG03493_10mg",
+"HG03493_plain"
+))
+
+bindersvsnonbinders_table_long_MAEOptimizationsubun =  bindersvsnonbinders_table_long_MAEOptimizationsub[!duplicated(bindersvsnonbinders_table_long_MAEOptimizationsub[2]),]
+
+
+bindervsnonbinder_plot_MAEOptimizationsub <- ggplot(bindersvsnonbinders_table_long_MAEOptimizationsub, aes(x = fct_rev(Condition), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("binders" = "#525252", "nonbinders" = "#999999"),
+                    labels = c("Binders", "Non-Binders"),
+                    guide = guide_legend(reverse = TRUE)) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimizationsub, aes(label = Count), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimizationsubun, aes(label = total,y=total+10),position=position_dodge(width = 1),
+           hjust=-0.3,color = "black", size = 3)+
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "netMHCpan prediction")) +
+  theme(legend.position = "top",
+        panel.grid = element_blank()
+        #axis.ticks = element_blank(),
+        #axis.text.x = element_blank()
+        )+
+  coord_flip()
+
+
+mhcivsmhciivsnonbinders_table_MAEOptimization <- data.frame(matrix(0, nrow = 3, ncol = length(conditions_MAEOptimization)))
+rownames(mhcivsmhciivsnonbinders_table_MAEOptimization) <- c("mhcibinders", "mhciibinders", "nonbinders")
+colnames(mhcivsmhciivsnonbinders_table_MAEOptimization) <- conditions_MAEOptimization
+
+i=1 
+for (i in 1:ncol(mhcivsmhciivsnonbinders_table_MAEOptimization)) {
+  mhcivsmhciivsnonbinders_table_MAEOptimization["nonbinders",i] <- sum(is.na(epitopes_9to11_withbinders_tibbles_MAEOptimization[[i]]$Allele), is.na(epitopes_12andup_withbinders_tibbles_MAEOptimization[[i]]$Allele))
+}
+
+j=1 
+for (j in 1:ncol(mhcivsmhciivsnonbinders_table_MAEOptimization)) {
+  mhcivsmhciivsnonbinders_table_MAEOptimization["mhcibinders",j] <- sum(!is.na(epitopes_9to11_withbinders_tibbles_MAEOptimization[[j]]$Allele))
+}
+
+k=1 
+for (k in 1:ncol(mhcivsmhciivsnonbinders_table_MAEOptimization)) {
+  mhcivsmhciivsnonbinders_table_MAEOptimization["mhciibinders",k] <- sum(!is.na(epitopes_12andup_withbinders_tibbles_MAEOptimization[[k]]$Allele))
+}
+
+mhcivsmhciivsnonbinders_table_MAEOptimization <- as.data.frame(t(mhcivsmhciivsnonbinders_table_MAEOptimization))
+mhcivsmhciivsnonbinders_table_MAEOptimization$total <- mhcivsmhciivsnonbinders_table_MAEOptimization$mhcibinders + mhcivsmhciivsnonbinders_table_MAEOptimization$mhciibinders + mhcivsmhciivsnonbinders_table_MAEOptimization$nonbinders
+mhcivsmhciivsnonbinders_table_MAEOptimization$Condition <- conditions_MAEOptimization
+mhcivsmhciivsnonbinders_table_MAEOptimization$Condition <- factor(mhcivsmhciivsnonbinders_table_MAEOptimization$Condition, levels = conditions_MAEOptimization)
+mhcivsmhciivsnonbinders_table_MAEOptimization$percent <- round(((mhcivsmhciivsnonbinders_table_MAEOptimization$mhcibinders + mhcivsmhciivsnonbinders_table_MAEOptimization$mhciibinders) / mhcivsmhciivsnonbinders_table_MAEOptimization$total) * 100, digits = 1)
+
+
+print(mhcivsmhciivsnonbinders_table_MAEOptimization)
+
+# Reshape the data to long format
+mhcivsmhciivsnonbinders_table_long_MAEOptimization <- pivot_longer(mhcivsmhciivsnonbinders_table_MAEOptimization, cols = c(mhcibinders, mhciibinders, nonbinders), names_to = "Type", values_to = "Count")
+
+
+# Create the horizontal stacked bar graph with legend, modified axes, and appearance
+mhcivsmhciivsnonbinders_table_long_MAEOptimization$Percent <- mhcivsmhciivsnonbinders_table_long_MAEOptimization$Count / mhcivsmhciivsnonbinders_table_long_MAEOptimization$total * 100
+mhcivsmhciivsnonbinders_plot_MAEOptimization <- ggplot(mhcivsmhciivsnonbinders_table_long_MAEOptimization, aes(x = fct_rev(Condition), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("nonbinders" = "#999999", "mhciibinders" = "#7a7a7a", "mhcibinders" = "#3d3d3d"),
+                    labels = c("MHCI Binders", "MHCII Binders", "Non-Binders"),
+                    guide = guide_legend(reverse = TRUE)) +
+  geom_text(data = mhcivsmhciivsnonbinders_table_long_MAEOptimization, aes(label = Count), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "netMHCpan prediction")) +
+  theme(legend.position = "top",
+        panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank()) +
+  coord_flip()
+
+print(mhcivsmhciivsnonbinders_plot_MAEOptimization)
+
+
+# Create the relative stacked bar graph with both absolute values and percentages
+bindervsnonbinder_plot_relative <- ggplot(bindersvsnonbinders_table_long_MAEOptimizationrel, aes(x = fct_rev(Condition), y = Percent, fill = Type)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_manual(values = c("binders" = "#525252", "nonbinders" = "#999999"),
+                    labels = c("Binders", "Non-Binders"),
+                    guide = guide_legend(reverse = TRUE)) +
+  geom_text(aes(label = paste(Count, " (", round(Percent, 1), "%)")), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "netMHCpan prediction")) +
+  theme(legend.position = "top",
+        panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank()) +
+  coord_flip()
+
+print(bindervsnonbinder_plot_relative)
+```
+
+
+```{r subset plots, message=FALSE, warning=FALSE, echo=FALSE}
+# STAGE vs RP
+bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP <- bindersvsnonbinders_table_long_MAEOptimization[grepl("RP1percent|STAGE1percent", bindersvsnonbinders_table_long_MAEOptimization$Condition), ]
+bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP$Condition <- gsub(".*_(.*?)$", "\\1", bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP$Condition)
+bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP$Condition <- gsub("1percentFDR", "\\1", bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP$Condition)
+bindervsnonbinder_plot_MAEOptimization.subset.STAGEvSRP <- ggplot(bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP, aes(x = fct_inorder(Condition), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", color = "black", width=0.8) +
+  scale_fill_manual(values = c("binders" = "#525252", "nonbinders" = "#999999"),
+                    labels = c("Binders", "Non-Binders")) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP, aes(label = Count), position = position_stack(vjust = 0.5), color = "white", size = 3) +
+  geom_text(data = bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP, aes(label = total, y = total), vjust = 0.5, hjust = -.25, size = 3) +  
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  guides(fill = guide_legend(title = "netMHCpan prediction")) +
+  scale_y_continuous(limits = c(0, max(bindersvsnonbinders_table_long_MAEOptimization.subset.STAGEvSRP$total)*1.1)) +
+  theme(legend.position = "top",
+        panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        #axis.text.x = element_text(angle = 45, hjust = 1)
+        #plot.margin = margin(1, .35, 1, .35, "in"),
+       #plot.background = element_rect(fill = "transparent")
+       ) + 
+  coord_flip()
+
+print(bindervsnonbinder_plot_MAEOptimization.subset.STAGEvSRP)
+
+```
+
+
