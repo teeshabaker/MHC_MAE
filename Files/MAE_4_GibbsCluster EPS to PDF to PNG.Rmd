@@ -1,0 +1,34 @@
+---
+title: "HTML report for gibbscluster"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+<!-- This script  is for creating PNG files from the EPS files created by GibbCluster.  -->
+<!-- The software does not accurately export all PNG files, even when EPS/MAT files are being created.  -->
+<!-- GibbsCluster produces EPS files. These need to be opened with Acrobat Distiller to create PDF files for each EPS file.  -->
+<!-- This script takes [INPUT FILE] PDF files of sequence logos to create [OUTPUT FILE] PNG sequence logos.  -->
+
+
+<!-- The first code chunk loads the required libraries and functions from MAE functions.R file and sets the parent_folder and the pattern to match files on -->
+
+```{r setup,  message=FALSE, warning=FALSE, echo=FALSE}
+require(stringr)
+library(magick)
+
+# all functions for MAE processing can be found in:
+source("./MAE functions.R")
+
+#variables that need to be assigned for this script:
+parent_folder <- "/path/to/folder"
+pattern <- "gibbs_logos_(\\d+)of(\\d+).pdf"
+```
+
+```{r PDF to PNG,  message=FALSE, warning=FALSE, echo=FALSE}
+pdf_files <- list.files(parent_folder, pattern = pattern, full.names = TRUE, recursive = TRUE)
+for (pdf_file in pdf_files) {
+  if (grepl(pattern, pdf_file)) {
+    convert_pdf_to_png(pdf_file)
+  }
+}
+```
