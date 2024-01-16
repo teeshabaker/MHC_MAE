@@ -1,0 +1,11 @@
+---
+title: "Injections to remove for 1000 genome project"
+author: "Teesha Baker"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r items_to_remove, echo=FALSE, message=FALSE, warning=FALSE}
+# these injections are to be removed from the 1000 genome project to replicate the results in the thesis
+items_to_remove <- c("empty_-", "GM18634_plain", "GM19747_10mg", "GM19747_plain", "GM19834_plain", "GM19834_10mg", "GM19922_plain", "HG00264_10mg", "HG02262_plain", "HG02339_plain",  "HG02420_plain", "HG03485_plain","HG03485_10mg", "HG04100_plain","GM20504_plain")
+```
