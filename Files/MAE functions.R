@@ -379,7 +379,7 @@ create_fasta_file_new <- function(tibble, column_header, file_name) {
 }
 
 # Define a function to find the union of peptides 
-find_epitopes_union_new <- function(peptides_table, accession_col, start_col, end_col, peptide_sequence_col) {
+find_epitopes_union_new <- function(peptides_table, accession_col="Description", start_col = "Start", end_col = "End", peptide_sequence_col = "Peptide.Sequence") {
   sorted <- arrange(peptides_table, !!sym(accession_col), !!sym(start_col), desc(!!sym(end_col)))
   n_peptides <- nrow(sorted)
   result <- list(
