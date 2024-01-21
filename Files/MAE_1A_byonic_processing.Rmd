@@ -57,7 +57,7 @@ cond_split <- cond_split[match(conds, names(cond_split))]
 
 
 #read in data and create list of peptides 
-cond_peptides_ALL <- map(cond_split, ~bind_replicates(.x, min_percentage = 2/3))
+cond_peptides_ALL <- map(cond_split, ~bind_replicates_countrep(.x, min_percentage = 2/3,paste0(tools::file_path_sans_ext(.x$path[1]),".csv")))
 cond_peptides_9to11 <- map(cond_peptides_ALL, ~ filter_tibble_by_length(.x, "<", 12))
 cond_peptides_12andup <- map(cond_peptides_ALL, ~ filter_tibble_by_length(.x, ">", 11))
 
@@ -72,7 +72,7 @@ cond_epitopes_fromALL.length_union <- foreach(tibble = cond_peptides_ALL) %dopar
   library(purrr)
   library(dplyr)
   library(stringr)
-  find_epitopes_union(tibble)
+  find_epitopes_union_new(tibble)
 }
 
 cond_epitopes_from9to11_union <- list()
@@ -80,7 +80,7 @@ cond_epitopes_from9to11_union <- foreach(tibble = cond_peptides_9to11) %dopar% {
   library(purrr)
   library(dplyr)
   library(stringr)
-  find_epitopes_union(tibble)
+  find_epitopes_union_new(tibble)
 }
 
 cond_epitopes_from12andup_union <- list() 
@@ -88,7 +88,7 @@ cond_epitopes_from12andup_union <- foreach(tibble = cond_peptides_12andup) %dopa
   library(purrr)
   library(dplyr)
   library(stringr)
-  find_epitopes_union(tibble)
+  find_epitopes_union_new(tibble)
 }
 
 names(cond_epitopes_fromALL.length_union) <- conds
